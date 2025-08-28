@@ -1,0 +1,1113 @@
+# 0. Namespace
+# Létrehozzuk a közös névteret az összes erőforrás számára.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: thanos-ha
+---
+# 2. ConfigMaps
+# Itt tároljuk a konfigurációs fájlokat.
+# !!! FONTOS: Az alábbi ConfigMap-ek 'data' szekcióit töltsd fel a saját konfigurációiddal! !!!
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: thanos-ha
+data:
+  prometheus1.yaml: |
+
+    global:
+      scrape_interval: 15s  # By default, scrape targets every 15 seconds.
+      evaluation_interval: 15s  # By default, scrape targets every 15 seconds.
+      # scrape_timeout is set to the global default (10s).
+
+      # Attach these labels to any time series or alerts when communicating with
+      # external systems (federation, remote storage, Alertmanager).
+      external_labels:
+        cluster: 'chicago'
+        replica: 'r1'
+
+    # Load and evaluate rules in this file every 'evaluation_interval' seconds.
+    rule_files:
+    #  - 'alert.rules'
+      # - "first.rules"
+      # - "second.rules"
+
+    # alert
+    alerting:
+      alertmanagers:
+        - scheme: http
+          static_configs:
+            - targets:
+                - 'alertmanager:9093'
+
+    # A scrape configuration containing exactly one endpoint to scrape:
+    # Here it's Prometheus itself.
+    scrape_configs:
+
+      - job_name: 'prometheus'
+        scrape_interval: 15s
+        static_configs:
+          - targets: 
+              - 'prometheus-1:9090'
+              - 'prometheus-2:9090'
+
+      - job_name: 'thanos'
+        scrape_interval: 15s
+        file_sd_configs:
+        - files:
+          - targets/thanos_r1.yaml
+
+      - job_name: 'grafana'
+        scrape_interval: 15s
+        static_configs:
+          - targets: ['grafana:3000']
+
+      - job_name: 'minio-job'
+        kubernetes_sd_configs:
+        - role: pod
+        relabel_configs:
+        # Csak azokat a podokat tartjuk meg, amiknek app=minio a címkéje
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: minio
+        # Csak azokat a podokat tartjuk meg, amiken van scrape annotáció
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        # A metrikák útvonalát az annotációból vesszük
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        # A scrape portot és címet az annotációból és a pod IP-jéből rakjuk össze
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__    
+
+      - job_name: 'vm_group'
+        scrape_interval: 15s
+        file_sd_configs:
+        - files:
+          - targets/vm_group30.yaml
+        metrics_path: /metrics
+        relabel_configs:
+          - source_labels: [ __address__ ]
+            target_label: instance
+            regex: '(.*):9100'
+            replacement: '${1}'
+            
+      - job_name: 'kubernetes-cadvisor'
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+        - role: node
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor    
+
+  prometheus2.yaml: |
+  
+    global:
+      scrape_interval: 15s  # By default, scrape targets every 15 seconds.
+      evaluation_interval: 15s  # By default, scrape targets every 15 seconds.
+      # scrape_timeout is set to the global default (10s).
+
+      # Attach these labels to any time series or alerts when communicating with
+      # external systems (federation, remote storage, Alertmanager).
+      external_labels:
+        cluster: 'chicago'
+        replica: 'r2'
+
+    # Load and evaluate rules in this file every 'evaluation_interval' seconds.
+    rule_files:
+      - 'alert.rules'
+      # - "first.rules"
+      # - "second.rules"
+
+    # alert
+    alerting:
+      alertmanagers:
+        - scheme: http
+          static_configs:
+            - targets:
+                - 'alertmanager:9093'
+
+    # A scrape configuration containing exactly one endpoint to scrape:
+    # Here it's Prometheus itself.
+    scrape_configs:
+      # The job name is added as a label `job=<job_name>`
+      # to any timeseries scraped from this config.
+
+      - job_name: 'prometheus'
+        scrape_interval: 15s
+        static_configs:
+          - targets: ['prometheus-1:9090', 'prometheus-2:9090']
+
+      - job_name: 'thanos'
+        scrape_interval: 15s
+        file_sd_configs:
+        - files:
+          - targets/thanos_r1.yaml
+          
+      - job_name: 'grafana'
+        scrape_interval: 15s
+        static_configs:
+          - targets: ['grafana:3000']        
+          
+      - job_name: 'minio-job'
+        kubernetes_sd_configs:
+        - role: pod
+        relabel_configs:
+        # Csak azokat a podokat tartjuk meg, amiknek app=minio a címkéje
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: minio
+        # Csak azokat a podokat tartjuk meg, amiken van scrape annotáció
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        # A metrikák útvonalát az annotációból vesszük
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        # A scrape portot és címet az annotációból és a pod IP-jéből rakjuk össze
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__          
+
+      - job_name: 'vm_group'
+        scrape_interval: 15s
+        file_sd_configs:
+        - files:
+          - targets/vm_group50.yaml
+        metrics_path: /metrics
+        relabel_configs:
+          - source_labels: [ __address__ ]
+            target_label: instance
+            regex: '(.*):9100'
+            replacement: '${1}'
+
+  vm_group30.yaml: |
+    - targets:
+      - "10.0.84.31:9100"
+      - "10.0.84.32:9100"
+      - "10.0.84.33:9100"
+      - "10.0.84.34:9100"
+      - "10.0.84.35:9100"
+      - "10.0.84.36:9100"
+      labels:
+        group: 'vm-group-1'
+
+  vm_group50.yaml: |
+    - targets:
+      - "10.0.84.50:9100"
+      - "10.0.84.51:9100"
+      - "10.0.84.52:9100"
+      - "10.0.84.53:9100"
+      labels:
+        group: 'vm-group-2'            
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: thanos-config
+  namespace: thanos-ha
+data:
+  bucket_config.yaml: |
+
+    type: S3
+    config:
+      bucket: thanos-bucket
+      access_key: minio
+      secret_key: grafana3030
+      endpoint: minio:9000
+      insecure: true
+    #  signature_version2: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: thanos-ha
+data:
+  GF_SERVER_DOMAIN: "localhost"
+  GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+  GF_USERS_DEFAULT_THEME: "dark"
+  GF_USERS_ALLOW_SIGN_UP: "false"
+  GF_FEATURE_TOGGLES_ENABLE: envelopeEncryption,accessControlOnCall,idForwarding,externalServiceAccounts,alertingCentralAlertHistory,alertStateHistoryLokiSecondary,alertStateHistoryLokiPrimary,alertStateHistoryLokiOnly,ssoSettingsLDAP,exploreMetrics,provisioning,kubernetesClientDashboardsFolders,kubernetesDashboards,grafanaAPIServerEnsureKubectlAccess,ssoSettingsAPI,alertingListViewV2,grafanaAdvisor,traceqlEditor,metricsSummary
+#  GF_LOG_FILTERS: "rendering:error"
+  GF_FEATURE_MANAGEMENT_ALLOW_EDITING: "true"
+#  GF_UNIFIED_ALERTING_STATE_HISTORY_BACKEND: "loki"
+#  GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL: "http://loki.thanos-ha.svc.cluster.local:3100"
+#  GF_INSTALL_PLUGINS: "jdbranham-diagram-panel,https://storage.googleapis.com/integration-artifacts/grafana-exploretraces-app/grafana-exploretraces-app-latest.zip;grafana-traces-app"
+# ... grafana deployment ...
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: thanos-ha
+data:
+  datasources.yaml: |-
+      apiVersion: 1
+      datasources:
+        - name: Thanos
+          type: prometheus
+          access: proxy
+          url: http://thanos-query-frontend:9090 # A frontend service-t célozzuk
+          jsonData:
+            timeInterval: 15s
+            queryTimeout: 60s
+            httpMethod: POST
+            manageAlerts: true
+            allowAsRecordingRulesTarget: true
+            prometheusType: Prometheus
+            prometheusVersion: 3.3.0
+            cacheLevel: 'High'
+            disableRecordingRules: false  
+          version: 1
+          editable: true
+        - name: Prometheus-1
+          type: prometheus
+          access: proxy
+          url: http://prometheus-1:9090
+          isDefault: false
+          version: 1
+          editable: true
+        - name: Prometheus-2
+          type: prometheus
+          access: proxy
+          url: http://prometheus-2:9090
+          isDefault: false
+          version: 1
+          editable: true     
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: thanos-ha
+data:
+  alertmanager.yml: |
+  
+      global:
+          smtp_require_tls: false
+          # The smarthost and SMTP sender used for mail notifications.
+          smtp_smarthost: 'pwnwp0968v05.logon.ds.ge.com:25'
+          smtp_from: 'prom-alertmanager@idomsoft.hu'
+          smtp_auth_username:
+          smtp_auth_password:
+
+        templates:
+
+         - /etc/alertmanager/*.tmpl
+
+        route:
+          group_by: ['alertname', 'cluster', 'service', 'job']
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 3h
+          receiver: mail
+
+        receivers:
+        - name: 'mail'
+          email_configs:
+          - to: lajos.misurda@idomsoft.hu
+
+---
+# 3. Persistent Volume Claims
+# Lefoglaljuk a tárhelyet a stateful alkalmazások számára.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus1-data
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "2Gi" } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus2-data
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "2Gi" } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "2Gi" } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "2Gi" } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: thanos-store-data
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "5Gi" } } # Az index-cache-nek elég kisebb méret is
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: thanos-compactor
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "1Gi" } } # Az index-cache-nek elég kisebb méret is
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: thanos-ruler
+  namespace: thanos-ha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: "1Gi" } }
+---  
+  
+# 4. Deployments and Services
+---
+# Prometheus 1 (with Thanos Sidecar)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-1
+  namespace: thanos-ha
+  labels: { app: prometheus-1 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: prometheus-1 } }
+  template:
+    metadata: { labels: { app: prometheus-1 } }
+    spec:
+      securityContext: { runAsUser: 1001, fsGroup: 1001 }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-config }
+        - name: data
+          persistentVolumeClaim: { claimName: prometheus1-data }
+        - name: thanos-config
+          configMap: { name: thanos-config }
+      containers:
+        - name: prometheus
+          image: bitnami/prometheus:3.5.0
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          args:
+            - '--config.file=/etc/prometheus/prometheus1.yaml'
+            - '--storage.tsdb.path=/prometheus'
+            - '--storage.tsdb.max-block-duration=2h'
+            - '--storage.tsdb.min-block-duration=2h'
+            - '--storage.tsdb.retention.time=2h'
+            - '--web.enable-lifecycle'
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus1.yaml
+              subPath: prometheus1.yaml
+            - name: config
+              mountPath: /etc/prometheus/targets/vm_group30.yaml
+              subPath: vm_group30.yaml
+            - name: data
+              mountPath: /prometheus           
+           
+        - name: thanos-sidecar
+          image: thanosio/thanos:v0.39.2
+          args:
+            - 'sidecar'
+            - '--tsdb.path=/prometheus'
+            - '--prometheus.url=http://localhost:9090'
+            - '--grpc-address=0.0.0.0:10901'
+            - '--http-address=0.0.0.0:10902'
+            - '--objstore.config-file=/etc/thanos/bucket_config.yaml'
+            - '--shipper.upload-compacted'
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http-sidecar
+              containerPort: 10902
+          volumeMounts:
+            - name: data
+              mountPath: /prometheus
+            - name: thanos-config
+              mountPath: /etc/thanos
+---
+# 4. Deployments and Services
+
+# Prometheus 2 (with Thanos Sidecar)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-2
+  namespace: thanos-ha
+  labels: { app: prometheus-2 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: prometheus-2 } }
+  template:
+    metadata: { labels: { app: prometheus-2 } }
+    spec:
+      securityContext: { runAsUser: 1001, fsGroup: 1001 }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-config }
+        - name: data
+          persistentVolumeClaim: { claimName: prometheus2-data }
+        - name: thanos-config
+          configMap: { name: thanos-config }
+      containers:
+        - name: prometheus
+          image: bitnami/prometheus:3.5.0
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          args:
+            - '--config.file=/etc/prometheus/prometheus2.yaml'
+            - '--storage.tsdb.path=/prometheus'
+            - '--storage.tsdb.max-block-duration=2h'
+            - '--storage.tsdb.min-block-duration=2h'
+            - '--storage.tsdb.retention.time=2h'
+            - '--web.enable-lifecycle'
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus2.yaml
+              subPath: prometheus2.yaml
+            - name: config  
+              mountPath: /etc/prometheus/targets/vm_group50.yaml
+              subPath: vm_group50.yaml
+            - name: data
+              mountPath: /prometheus  
+              
+        - name: thanos-sidecar
+          image: thanosio/thanos:v0.39.2
+          args:
+            - 'sidecar'
+            - '--tsdb.path=/prometheus'
+            - '--prometheus.url=http://localhost:9090'
+            - '--grpc-address=0.0.0.0:10901'
+            - '--http-address=0.0.0.0:10902'
+            - '--objstore.config-file=/etc/thanos/bucket_config.yaml'
+            - '--shipper.upload-compacted'
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http-sidecar
+              containerPort: 10902
+          volumeMounts:
+            - name: data
+              mountPath: /prometheus
+            - name: thanos-config
+              mountPath: /etc/thanos
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-1
+  namespace: thanos-ha
+spec:
+  selector: { app: prometheus-1 }
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      nodePort: 30991
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+  type: NodePort    
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-2
+  namespace: thanos-ha
+spec:
+  selector: { app: prometheus-2 }
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      nodePort: 30992 
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+  type: NodePort    
+---
+# Minio
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: thanos-ha
+  labels: { app: minio }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata:
+      labels: { app: minio }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: "/minio/v2/metrics/cluster"
+    spec:
+      containers:
+        - name: minio
+          image: 'bitnami/minio:2025.2.7'
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          envFrom:
+            - secretRef: { name: minio-secret }
+          env:
+            - name: MINIO_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MINIO_PROMETHEUS_AUTH_TYPE
+              value: "public"
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: minio-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: thanos-ha
+spec:
+  selector: { app: minio }
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+    - name: console
+      port: 9001
+      targetPort: console
+  type: NodePort        
+---
+#  Thanos Query-frontend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query-frontend
+  namespace: thanos-ha
+  labels: { app: thanos-query-frontend }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: thanos-query-frontend } }
+  template:
+    metadata: { labels: { app: thanos-query-frontend } }
+    spec:
+      containers:
+        - name: thanos-query-frontend
+          image: thanosio/thanos:v0.39.2
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          args:
+            - 'query-frontend'
+            - '--log.level=info'
+            - '--log.format=logfmt'
+            - '--http-address=0.0.0.0:10902'
+            - '--query-frontend.downstream-url=http://thanos-query:9090'
+            - '--query-frontend.enable-x-functions'
+            - '--query-range.split-interval=24h'
+            - '--query-range.max-retries-per-request=5'
+            - '--query-frontend.log-queries-longer-than=5s'
+            - '--cache-compression-type=snappy'
+          ports:
+            - name: grpc
+              containerPort: 10901               
+            - name: http
+              containerPort: 10902
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-query-frontend
+  namespace: thanos-ha
+spec:
+  selector: { app: thanos-query-frontend }
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+    - name: http
+      port: 9090
+      targetPort: http
+  type: NodePort    
+---
+  
+# Thanos Querier
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query
+  namespace: thanos-ha
+  labels: { app: thanos-query}
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: thanos-query } }
+  template:
+    metadata: { labels: { app: thanos-query } }
+    spec:
+      containers:
+        - name: thanos-query
+          image: thanosio/thanos:v0.39.2
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          args:
+            - 'query'
+            - '--grpc-address=0.0.0.0:10901'
+            - '--http-address=0.0.0.0:9090'
+            - '--query.replica-label=r1'
+            - '--query.replica-label=r2'
+            # A Kubernetes Service neveket használjuk az eléréshez
+            - '--endpoint=prometheus-1.thanos-ha.svc.cluster.local:10901'
+            - '--endpoint=prometheus-2.thanos-ha.svc.cluster.local:10901'
+            - '--endpoint=thanos-store-gateway.thanos-ha.svc.cluster.local:10901'
+            - '--endpoint=thanos-ruler.thanos-ha.svc.cluster.local:10901'
+            - '--query.auto-downsampling'        
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 9090
+
+# ... és így tovább a többi thanos komponenssel (store-gateway, compactor, stb.)
+# Mindegyiknek saját Deployment és Service kell, a megfelelő argumentumokkal és config-okkal.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-query
+  namespace: thanos-ha
+#  labels:
+#    app.kubernetes.io/component: query-layer
+#    app.kubernetes.io/instance: thanos-query
+#    app.kubernetes.io/name: thanos-query
+#    app.kubernetes.io/version: v0.39.2   
+spec:
+  selector: { app: thanos-query }
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+    - name: http
+      port: 9090
+      targetPort: http
+  type: NodePort
+#  selector:
+#    app.kubernetes.io/component: query-layer
+#    app.kubernetes.io/instance: thanos-query
+#    app.kubernetes.io/name: thanos-query  
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations: {}
+  name: thanos-query
+  namespace: thanos-ha
+---
+# thanos-ha-stack.yml
+# Thanos Store gateway
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-store-gateway
+  namespace: thanos-ha
+  labels: { app: thanos-store-gateway }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: thanos-store-gateway } }
+  template:
+    metadata: { labels: { app: thanos-store-gateway } }
+    spec:
+      securityContext: { runAsUser: 1001, fsGroup: 1001 }
+      volumes:
+        - name: thanos-config
+          configMap:
+            name: thanos-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: thanos-store-data
+      containers:
+        - name: thanos-store-gateway
+          image: thanosio/thanos:v0.39.2
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          args:
+            - 'store'
+            - '--grpc-address=0.0.0.0:10901'
+            - '--http-address=0.0.0.0:10902'
+            - '--data-dir=/var/thanos/store' # Most már írható lesz
+            - '--objstore.config-file=/etc/thanos/bucket_config.yaml'
+            - '--log.format=logfmt'
+            - '--index-cache-size=250MB'
+            - '--chunk-pool-size=1GB'
+            - '--store.grpc.series-max-concurrency=40'
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: thanos-config
+              mountPath: /etc/thanos
+            # AZ ÚJ TÁRHELY CSATOLÁSA
+            - name: data
+              mountPath: /var/thanos/store
+            
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations: {}
+  name: thanos-store-gateway
+  namespace: thanos-ha
+---
+# thanos-ha-stack.yml
+# Thanos Compactor gateway
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-compactor
+  namespace: thanos-ha
+  labels: { app: thanos-compactor }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: thanos-compactor } }
+  template:
+    metadata: { labels: { app: thanos-compactor } }
+    spec:
+      securityContext: { runAsUser: 1001, fsGroup: 1001 }
+      volumes:
+        - name: thanos-config
+          configMap:
+            name: thanos-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: thanos-compactor
+      containers:
+        - name: thanos-compactor
+          image: thanosio/thanos:v0.39.2
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          args:
+            - 'compact'
+            - '--log.level=info'
+            - '--log.format=logfmt'
+            - '--data-dir=/data'
+            - '--objstore.config-file=/etc/thanos/bucket_config.yaml'
+            - '--consistency-delay=30m'
+            - '--retention.resolution-raw=30d'
+            - '--retention.resolution-5m=120d'
+            - '--retention.resolution-1h=1y'
+            - '--compact.concurrency=2'
+            - '--downsample.concurrency=2'
+            - '--wait'
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: thanos-config
+              mountPath: /etc/thanos/
+            # AZ ÚJ TÁRHELY CSATOLÁSA
+            - name: data
+              mountPath: /data
+---
+# thanos-ha-stack.yml
+# Thanos Ruler
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-ruler
+  namespace: thanos-ha
+  labels: { app: thanos-ruler }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: thanos-ruler } }
+  template:
+    metadata: { labels: { app: thanos-ruler } }
+    spec:
+      securityContext: { runAsUser: 1001, fsGroup: 1001 }
+      volumes:
+        - name: thanos-config
+          configMap:
+            name: thanos-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: thanos-ruler
+      containers:
+        - name: thanos-ruler
+          image: thanosio/thanos:v0.39.2
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "512Mi"
+          args:
+            - 'rule'
+            - '--grpc-address=0.0.0.0:10901'
+            - '--http-address=0.0.0.0:10902'
+            - '--log.level=debug'
+            - '--data-dir=/data'
+            - '--eval-interval=15s'
+#            - '--rule-file=/etc/thanos/*.rules.yaml'
+#            - '--alertmanagers.url=http://alertmanager:9093'
+            - '--query=thanos-query:9090'
+            - '--objstore.config-file=/etc/thanos/bucket_config.yaml'
+            - "--label=ruler_cluster=\"vegas\""
+            - "--label=ruler_replica=\"r1\""
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: thanos-config
+              mountPath: /etc/thanos/
+            - name: data
+              mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-store-gateway
+  namespace: thanos-ha
+spec:
+  selector: { app: thanos-store-gateway }
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+    - name: http
+      port: 10902
+      targetPort: http
+  type: NodePort    
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-compactor
+  namespace: thanos-ha
+spec:
+  selector: { app: thanos-compactor }
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+    - name: http
+      port: 10902
+      targetPort: http
+  type: NodePort    
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-ruler
+  namespace: thanos-ha
+spec:
+  selector: { app: thanos-ruler }
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+    - name: http
+      port: 10902
+      targetPort: http
+  type: NodePort    
+---
+# Grafana
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: thanos-ha
+  labels: { app: grafana }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: grafana } }
+  template:
+    metadata: { labels: { app: grafana } }
+    spec:
+      securityContext: { fsGroup: 472, runAsUser: 472 }
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.1.0
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "265Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          envFrom:
+            - secretRef: { name: grafana-secret }
+            - configMapRef: { name: grafana-config }
+          ports:
+            - name: http
+              containerPort: 3000
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: grafana-data }
+        - name: grafana-datasources
+          configMap: { name: grafana-datasources }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: thanos-ha
+spec:
+  selector: { app: grafana }
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: 30303 
+  type: NodePort
+---  
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: thanos-monitoring-ingress
+  namespace: thanos-ha
+  annotations:
+    # Az alábbi annotáció az NGINX Ingress Controllerhez való.
+    # Másik controller esetén ez eltérő lehet.
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: grafana.sajat-domain.hu
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana
+            port:
+              number: 3030
+  - host: thanos.sajat-domain.hu
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            # A lekérdezéseket mindig a query-frontend-re irányítjuk!
+            name: thanos-query-frontend
+            port:
+              # A frontend HTTP portja a 9090
+              number: 9090  
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ingress
+  annotations:
+    # --- Authentikáció bekapcsolása ---
+    nginx.ingress.kubernetes.io/auth-type: basic
+    # A Secret, ami a felhasználónevet és jelszót tartalmazza
+    nginx.ingress.kubernetes.io/auth-secret: prometheus-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+spec:
+  rules:
+  - host: prometheus.sajat-domain.hu
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus-1 # A Prometheus Service neve
+            port:
+              number: 9090
